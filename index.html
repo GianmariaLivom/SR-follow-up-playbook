@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>SR Follow-ups Playbook</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Livom</p>
+        <h1 id="app-title">SR Follow-ups Playbook</h1>
+        <p id="app-subtitle" class="subtitle">Live from Google Sheets</p>
+      </div>
+      <div class="hero-actions">
+        <button id="refresh-button" type="button">Refresh</button>
+        <a id="sheet-link" href="#" target="_blank" rel="noopener">Open Sheet</a>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="Filters">
+      <label class="search-box">
+        <span>Search</span>
+        <input id="search-input" type="search" placeholder="Search speech, scenario, text..." autocomplete="off" />
+      </label>
+      <div id="filter-panel" class="filter-panel"></div>
+    </section>
+
+    <main>
+      <div class="status-line">
+        <span id="result-count">Loading...</span>
+        <span id="last-updated"></span>
+      </div>
+      <div id="error-box" class="error-box" hidden></div>
+      <div id="playbook-grid" class="playbook-grid" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <template id="card-template">
+    <article class="playbook-card">
+      <div class="card-topline"></div>
+      <h2></h2>
+      <p class="card-body"></p>
+      <dl class="field-list"></dl>
+      <div class="card-actions">
+        <button type="button" class="copy-button">Copy</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
