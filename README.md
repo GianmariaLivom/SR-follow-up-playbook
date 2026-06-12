@@ -1,18 +1,23 @@
 # SR Follow-ups Playbook
 
-This is the original Follow-Up Playbook interface adapted to read the Google Sheet tab:
+Original Follow-Up Playbook interface adapted to the SR follow-up table.
 
-`Master Table - SR Follow ups`
+Live source:
 
-It displays only these flows:
+- Spreadsheet ID: `1aayW-28FgZ315-ATeexxmGnvodsru_G2p6WUufuOng4`
+- GID: `2037137445`
+- Sheet names tried: `Master Table - SR Follow ups`, `Master Table - SR Follow up`
+- Range: `A:K`
 
-- Before SR
-- Follow up
-- Future
+Expected structure from the uploaded CSV:
 
-## Files
+- `Before SR`: 8 steps across 3 inner flows
+- `Follow up`: 17 steps across 3 inner flows
+- `Future`: 12 steps across 2 inner flows
 
-Upload these files to the GitHub repository root:
+Total expected rows: 37.
+
+## Files to upload to GitHub root
 
 - `index.html`
 - `styles.css`
@@ -22,11 +27,4 @@ Upload these files to the GitHub repository root:
 - `.nojekyll`
 - `README.md`
 
-## Google Sheet requirements
-
-The Google Sheet must be visible to anyone with the link as Viewer.
-The tab name in `config.js` must match exactly:
-
-`Master Table - SR Follow ups`
-
-The script reads the range `A:AZ` and searches for the row containing the flow-table headers.
+The old `app.js` file is not used and can be deleted.

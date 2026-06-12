@@ -1,4 +1,5 @@
 const FALLBACK_DATA_URL = "data.json";
+const EXPECTED_FLOWS = ["Before SR", "Follow up", "Future"];
 
 const HEADER_MAP = [
   "flow",
@@ -11,19 +12,7 @@ const HEADER_MAP = [
   "speech",
   "if_reply",
   "if_no_reply",
-  "template",
-  "positive_wording_score",
-  "positive_wording",
-  "positive_emotions_score",
-  "positive_emotions",
-  "negative_wording_score",
-  "negative_wording",
-  "negative_emotions_score",
-  "negative_emotions",
-  "questions",
-  "inspiration",
-  "rules",
-  "extra"
+  "template"
 ];
 
 let HEADER_LABELS = {
@@ -37,58 +26,16 @@ let HEADER_LABELS = {
   speech: "Template / Speech",
   if_reply: "If answer / reply",
   if_no_reply: "If no answer / no reply",
-  template: "Template",
-  positive_wording_score: "Positive wording score",
-  positive_wording: "Positive wording",
-  positive_emotions_score: "Positive emotions score",
-  positive_emotions: "Positive emotions",
-  negative_wording_score: "Negative wording score",
-  negative_wording: "Negative wording",
-  negative_emotions_score: "Negative emotions score",
-  negative_emotions: "Negative emotions",
+  template: "If No Answer / No Reply - Template",
   questions: "Questions",
   inspiration: "Inspiration",
+  positive_wording: "Positive wording",
+  positive_emotions: "Positive emotions",
+  negative_wording: "Negative wording",
+  negative_emotions: "Negative emotions",
   rules: "Rules",
-  extra: "Extra"
+  extra: "Notes"
 };
-
-const HEADER_ALIASES = {
-  flow: ["flow", "layer 1", "stage", "phase", "main flow", "main flows"],
-  objective: ["objective"],
-  inner_flow: ["inner flow", "inner_flow", "reach out process", "reach-out process", "reachout process", "layer 2", "process", "scenario", "sub flow", "subflow"],
-  step: ["step", "steps", "nr", "no", "number"],
-  trigger: ["what triggers the step", "trigger", "trigger of the step", "trigger step"],
-  time: ["time", "timing", "when"],
-  action: ["action", "channel", "action/channel", "action / channel", "touchpoint", "tool"],
-  speech: ["template/speech", "template / speech", "speech", "message", "text", "script"],
-  if_reply: ["if answer / reply", "if answer", "if reply", "if customer replies", "if answer reply"],
-  if_no_reply: ["if no answer / no reply", "if no answer", "if no reply", "if customer does not reply", "if no answer no reply"],
-  template: ["template", "if no answer / no reply - template", "if no answer template", "no reply template"],
-  positive_wording_score: ["positive wording score", "potivie wording score"],
-  positive_wording: ["positive wording", "potivie wording"],
-  positive_emotions_score: ["positive emotions score", "potivie emotions score"],
-  positive_emotions: ["positive emotions", "potivie emotions"],
-  negative_wording_score: ["negative wording score"],
-  negative_wording: ["negative wording"],
-  negative_emotions_score: ["negative emotions score"],
-  negative_emotions: ["negative emotions"],
-  questions: ["questions"],
-  inspiration: ["inspiration"],
-  rules: ["rules", "stop / rule", "stop rule"],
-  extra: ["extra", "notes", "note"]
-};
-
-const HEADER_TOKENS = new Set([
-  "positive wording",
-  "potivie wording",
-  "positive emotions",
-  "potivie emotions",
-  "negative wording",
-  "negative emotions",
-  "questions",
-  "inspiration",
-  "rules"
-]);
 
 let rows = [];
 let selectedFlow = null;
@@ -121,72 +68,81 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   bindEvents();
+
   try {
-    const spreadsheetId = (window.PLAYBOOK_SPREADSHEET_ID || "").trim();
-    const sheetName = (window.PLAYBOOK_SHEET_NAME || "").trim();
-    const csvUrl = (window.PLAYBOOK_CSV_URL || "").trim();
-
-    if (spreadsheetId && sheetName) {
-      rows = await loadRowsFromGoogleSheet(spreadsheetId, sheetName, window.PLAYBOOK_RANGE || "A:AZ");
-      el.sourcePill.textContent = "Source: Google Sheet";
-    } else if (csvUrl) {
-      rows = await loadRowsFromCsv(csvUrl);
-      el.sourcePill.textContent = "Source: Google Sheet CSV";
-    } else {
-      const response = await fetch(FALLBACK_DATA_URL, { cache: "no-store" });
+    const live = await loadLiveRows();
+    rows = live.rows;
+    el.sourcePill.textContent = live.label;
+  } catch (liveError) {
+    console.warn("Live Google Sheet failed; using local fallback.", liveError);
+    try {
+      const response = await fetch(FALLBACK_DATA_URL + "?_=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not read local data.json.");
       const payload = await response.json();
-      if (Array.isArray(payload.columns)) {
-        payload.columns.forEach((label, index) => {
-          const key = HEADER_MAP[index];
-          if (key && cleanValue(label)) HEADER_LABELS[key] = cleanValue(label);
-        });
-      }
+      applyColumnLabels(payload.columns || []);
       rows = normalizeRows(payload.rows || []);
-      el.sourcePill.textContent = "Source: local data.json";
+      el.sourcePill.textContent = "Source: local fallback";
+    } catch (fallbackError) {
+      console.error(fallbackError);
+      el.sourcePill.textContent = "Data load error";
+      el.flowGrid.innerHTML = `<div class="empty-state">Could not load playbook data. Live error: ${escapeHtml(liveError.message || liveError)}. Fallback error: ${escapeHtml(fallbackError.message || fallbackError)}.</div>`;
+      return;
     }
+  }
 
-    rows = rows.filter(r => r.flow || r.inner_flow || r.step || r.template || r.speech);
-    rows = filterAllowedFlows(rows);
-    populateFilters();
-    render();
-  } catch (error) {
-    console.error(error);
-    el.sourcePill.textContent = "Data load error";
-    el.flowGrid.innerHTML = `<div class="empty-state">Could not load the live Google Sheet data. Error: ${escapeHtml(error.message || error)}<br><br>Check that the sheet is shared with anyone who has the link and that the tab name is exactly: ${escapeHtml(window.PLAYBOOK_SHEET_NAME || "")}</div>`;
+  rows = rows.filter(hasUsefulData);
+  const flowKeys = new Set(rows.map(r => flowKey(r.flow)));
+  const missing = EXPECTED_FLOWS.filter(flow => !flowKeys.has(flowKey(flow)));
+
+  populateFilters();
+  render();
+
+  if (missing.length) {
+    el.sourcePill.textContent += ` · missing: ${missing.join(", ")}`;
   }
 }
 
-function bindEvents() {
-  el.searchInput.addEventListener("input", render);
-  el.channelFilter.addEventListener("change", render);
-  el.languageFilter.addEventListener("change", render);
-  el.resetBtn.addEventListener("click", () => {
-    el.searchInput.value = "";
-    el.channelFilter.value = "";
-    el.languageFilter.value = "";
-    selectedFlow = null;
-    selectedInner = null;
-    allExpanded = false;
-    render();
+async function loadLiveRows() {
+  const spreadsheetId = cleanValue(window.PLAYBOOK_SPREADSHEET_ID);
+  const range = cleanValue(window.PLAYBOOK_RANGE) || "A:K";
+  if (!spreadsheetId) throw new Error("Missing PLAYBOOK_SPREADSHEET_ID in config.js.");
+
+  const attempts = [];
+  const gid = cleanValue(window.PLAYBOOK_GID);
+  if (gid) attempts.push({ gid, label: "Source: Google Sheet" });
+
+  const sheetNames = Array.isArray(window.PLAYBOOK_SHEET_NAMES) ? window.PLAYBOOK_SHEET_NAMES : [];
+  sheetNames.forEach(sheet => {
+    if (cleanValue(sheet)) attempts.push({ sheet: cleanValue(sheet), label: "Source: Google Sheet" });
   });
-  el.expandAllBtn.addEventListener("click", () => {
-    allExpanded = !allExpanded;
-    el.expandAllBtn.textContent = allExpanded ? "Collapse all" : "Expand all";
-    renderSteps();
-  });
+
+  if (!attempts.length && cleanValue(window.PLAYBOOK_SHEET_NAME)) {
+    attempts.push({ sheet: cleanValue(window.PLAYBOOK_SHEET_NAME), label: "Source: Google Sheet" });
+  }
+
+  let lastError = null;
+  for (const attempt of attempts) {
+    try {
+      const matrix = await loadMatrixFromGoogleSheet(spreadsheetId, attempt, range);
+      const parsed = rowsFromMatrix(matrix);
+      const flowKeys = new Set(parsed.map(r => flowKey(r.flow)));
+      const hasExpected = EXPECTED_FLOWS.every(flow => flowKeys.has(flowKey(flow)));
+      if (!hasExpected) {
+        throw new Error(`Parsed flows: ${[...flowKeys].join(", ") || "none"}. Expected Before SR, Follow up, Future.`);
+      }
+      return { rows: parsed, label: attempt.label };
+    } catch (error) {
+      lastError = error;
+      console.warn("Google Sheet attempt failed", attempt, error);
+    }
+  }
+
+  throw lastError || new Error("No Google Sheet loading method configured.");
 }
 
-async function loadRowsFromCsv(url) {
-  const separator = url.includes("?") ? "&" : "?";
-  const response = await fetch(`${url}${separator}_=${Date.now()}`, { cache: "no-store" });
-  const csvText = await response.text();
-  const matrix = parseCsv(csvText);
-  return rowsFromMatrix(matrix);
-}
-
-function loadRowsFromGoogleSheet(spreadsheetId, sheetName, range) {
+function loadMatrixFromGoogleSheet(spreadsheetId, selector, range) {
   return new Promise((resolve, reject) => {
-    const callbackName = "__playbookSheetCallback_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
+    const callbackName = "__srPlaybookCallback_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
     const script = document.createElement("script");
     const timeout = window.setTimeout(() => {
       cleanup();
@@ -203,7 +159,7 @@ function loadRowsFromGoogleSheet(spreadsheetId, sheetName, range) {
           reject(new Error(message));
           return;
         }
-        resolve(rowsFromMatrix(matrixFromGoogleVisualization(response)));
+        resolve(matrixFromGoogleVisualization(response));
       } catch (error) {
         reject(error);
       }
@@ -211,16 +167,18 @@ function loadRowsFromGoogleSheet(spreadsheetId, sheetName, range) {
 
     script.onerror = () => {
       cleanup();
-      reject(new Error("Cannot load Google Sheet."));
+      reject(new Error("Cannot load Google Sheet script."));
     };
 
     const params = new URLSearchParams({
-      sheet: sheetName,
-      range: range || "A:AZ",
+      range,
       headers: "0",
       tqx: "responseHandler:" + callbackName,
       cachebust: String(Date.now())
     });
+    if (selector.gid) params.set("gid", selector.gid);
+    if (selector.sheet) params.set("sheet", selector.sheet);
+
     script.src = "https://docs.google.com/spreadsheets/d/" + encodeURIComponent(spreadsheetId) + "/gviz/tq?" + params.toString();
     document.head.appendChild(script);
 
@@ -234,10 +192,11 @@ function loadRowsFromGoogleSheet(spreadsheetId, sheetName, range) {
 
 function matrixFromGoogleVisualization(response) {
   const table = response.table;
-  if (!table || !Array.isArray(table.rows)) throw new Error("Google Sheets returned no table data.");
+  if (!table || !Array.isArray(table.rows)) throw new Error("Google Sheets returned no table rows.");
   const colCount = Math.max(
     table.cols ? table.cols.length : 0,
-    ...table.rows.map(row => row.c ? row.c.length : 0)
+    ...table.rows.map(row => row.c ? row.c.length : 0),
+    HEADER_MAP.length
   );
 
   return table.rows.map(row => {
@@ -258,400 +217,113 @@ function cleanCell(cell) {
 }
 
 function rowsFromMatrix(matrix) {
-  const wideRows = rowsFromWideFlowMatrix(matrix);
-  if (wideRows.length) return wideRows;
-
   const headerInfo = findHeaderInfo(matrix);
-  if (!headerInfo) {
-    return rowsFromSectionedMatrix(matrix);
-  }
+  if (!headerInfo) throw new Error("Could not find the Flow / Objective / Inner flow / Step header row.");
 
-  headerInfo.labels.forEach((label, index) => {
-    const key = headerInfo.columnKeys[index];
-    if (key && label) HEADER_LABELS[key] = label;
-  });
+  applyColumnLabels(headerInfo.labels);
 
-  const dataRows = matrix.slice(headerInfo.rowIndex + 1);
   let currentFlow = "";
   let currentObjective = "";
-  let currentInner = "Reach-out process";
-  const stepIndex = headerInfo.columnKeys.indexOf("step");
-
+  let currentInner = "";
   const output = [];
 
-  dataRows.forEach((row, idx) => {
-    const matchedFlow = findAllowedFlowInRow(row);
+  for (let rowIndex = headerInfo.rowIndex + 1; rowIndex < matrix.length; rowIndex++) {
+    const sourceRow = matrix[rowIndex] || [];
     const record = emptyRecord();
 
     headerInfo.columnKeys.forEach((key, index) => {
       if (!key) return;
-      record[key] = cleanValue(row[index]);
+      const value = cleanValue(sourceRow[index]);
+      if (value) record[key] = value;
     });
 
-    if (matchedFlow) currentFlow = matchedFlow;
-    if (record.flow) currentFlow = record.flow;
-    else record.flow = currentFlow;
+    const rawFlow = record.flow;
+    const canonical = canonicalFlowName(rawFlow);
+    if (canonical) currentFlow = canonical;
+    else if (rawFlow) currentFlow = rawFlow;
+    record.flow = currentFlow;
 
     if (record.objective) currentObjective = record.objective;
     else record.objective = currentObjective;
 
-    const possibleInner = inferInnerFromRow(row, headerInfo.columnKeys, stepIndex, matchedFlow);
     if (record.inner_flow) currentInner = record.inner_flow;
-    else if (possibleInner) currentInner = possibleInner;
-    else record.inner_flow = currentInner;
+    else record.inner_flow = currentInner || "Reach-out process";
 
-    if (!record.inner_flow) record.inner_flow = currentInner || "Reach-out process";
+    record.row_number = rowIndex + 1;
 
-    Object.keys(record).forEach(key => {
-      if (HEADER_TOKENS.has(norm(record[key]))) record[key] = "";
-    });
-
-    record.row_number = headerInfo.rowIndex + idx + 2;
-
-    const isOnlySectionRow = matchedFlow && !record.step && !record.trigger && !record.time && !record.action && !record.speech && !record.template;
-    const hasUsefulData = record.step || record.trigger || record.time || record.action || record.speech || record.template || record.if_reply || record.if_no_reply;
-
-    if (!isOnlySectionRow && record.flow && hasUsefulData) output.push(record);
-  });
-
-  return output.length ? output : rowsFromSectionedMatrix(matrix);
-}
-
-
-function rowsFromWideFlowMatrix(matrix) {
-  const allowed = Array.isArray(window.PLAYBOOK_ALLOWED_FLOWS) ? window.PLAYBOOK_ALLOWED_FLOWS : [];
-  if (!allowed.length || !Array.isArray(matrix) || !matrix.length) return [];
-
-  let flowHeaderRowIndex = -1;
-  let starts = [];
-
-  for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 80); rowIndex++) {
-    const row = matrix[rowIndex] || [];
-    const found = [];
-    row.forEach((value, index) => {
-      const flow = findAllowedFlow(value);
-      if (flow && !found.some(item => flowKey(item.flow) === flowKey(flow))) {
-        found.push({ flow, index });
-      }
-    });
-    if (found.length >= 2) {
-      flowHeaderRowIndex = rowIndex;
-      starts = found.sort((a, b) => a.index - b.index);
-      break;
-    }
+    if (!isExpectedFlow(record.flow)) continue;
+    if (!hasUsefulData(record)) continue;
+    output.push(record);
   }
 
-  if (flowHeaderRowIndex < 0 || starts.length < 2) return [];
-
-  const maxCols = Math.max(...matrix.map(row => row.length));
-  const blocks = starts.map((item, i) => ({
-    flow: item.flow,
-    start: item.index,
-    end: i + 1 < starts.length ? starts[i + 1].index : maxCols
-  }));
-
-  const output = [];
-
-  blocks.forEach(block => {
-    const headerInfo = findBlockHeader(matrix, block, flowHeaderRowIndex);
-    const columnKeys = headerInfo.columnKeys;
-    const headerRowIndex = headerInfo.rowIndex;
-    const dataStart = headerRowIndex >= 0 ? headerRowIndex + 1 : flowHeaderRowIndex + 1;
-
-    let currentInner = "Reach-out process";
-    let currentObjective = "Reach-out process";
-
-    for (let rowIndex = dataStart; rowIndex < matrix.length; rowIndex++) {
-      const segment = sliceBlock(matrix[rowIndex] || [], block);
-      if (!segment.some(v => cleanValue(v))) continue;
-
-      const hasOtherFlowMarker = segment.some(value => {
-        const found = findAllowedFlow(value);
-        return found && flowKey(found) !== flowKey(block.flow);
-      });
-      if (hasOtherFlowMarker) continue;
-
-      if (isMostlyHeaderSegment(segment)) continue;
-
-      const record = emptyRecord();
-      record.flow = block.flow;
-      record.objective = currentObjective;
-      record.inner_flow = currentInner;
-      record.row_number = rowIndex + 1;
-
-      columnKeys.forEach((key, index) => {
-        if (!key) return;
-        const value = cleanValue(segment[index]);
-        if (HEADER_TOKENS.has(norm(value))) return;
-        record[key] = value;
-      });
-
-      const values = segment.map(cleanValue).filter(Boolean).filter(value => !HEADER_TOKENS.has(norm(value)));
-      const sectionValue = detectSectionValue(values, block.flow);
-      const hasMappedUseful = hasUsefulRecordData(record);
-
-      if (sectionValue && !hasMappedUseful && values.length <= 3) {
-        currentInner = normalizeInnerName(sectionValue);
-        currentObjective = currentInner;
-        continue;
-      }
-
-      if (!record.inner_flow || flowKey(record.inner_flow) === flowKey(block.flow)) record.inner_flow = currentInner;
-      if (!record.objective) record.objective = currentObjective;
-
-      applyFallbackMapping(record, values, block.flow);
-
-      if (hasUsefulRecordData(record)) {
-        if (!record.inner_flow) record.inner_flow = currentInner;
-        output.push(record);
-      }
-    }
-  });
-
-  const parsedFlows = new Set(output.map(r => flowKey(r.flow)));
-  if (parsedFlows.size < 2) return [];
   return output;
 }
 
-function findBlockHeader(matrix, block, flowHeaderRowIndex) {
-  const fallbackWidth = Math.max(0, block.end - block.start);
-  let best = { rowIndex: -1, columnKeys: Array(fallbackWidth).fill(""), score: 0 };
-
-  const scanEnd = Math.min(matrix.length, flowHeaderRowIndex + 15);
-  for (let rowIndex = flowHeaderRowIndex; rowIndex < scanEnd; rowIndex++) {
-    const segment = sliceBlock(matrix[rowIndex] || [], block);
-    const keys = segment.map(value => canonicalHeaderKey(value));
-    const score = keys.filter(key => ["inner_flow", "step", "trigger", "time", "action", "speech", "template", "if_reply", "if_no_reply"].includes(key)).length;
-    if (score > best.score) best = { rowIndex, columnKeys: keys, score };
-  }
-
-  if (best.score >= 2) return best;
-
-  return {
-    rowIndex: -1,
-    columnKeys: defaultBlockKeys(fallbackWidth),
-    score: 0
-  };
-}
-
-function defaultBlockKeys(width) {
-  const base = [
-    "inner_flow",
-    "step",
-    "trigger",
-    "time",
-    "action",
-    "speech",
-    "if_reply",
-    "if_no_reply",
-    "template",
-    "positive_wording",
-    "positive_emotions",
-    "negative_wording",
-    "negative_emotions",
-    "questions",
-    "inspiration",
-    "rules",
-    "extra"
-  ];
-  return Array.from({ length: width }, (_, index) => base[index] || "extra");
-}
-
-function sliceBlock(row, block) {
-  const out = [];
-  for (let i = block.start; i < block.end; i++) out.push(cleanValue(row[i] || ""));
-  return out;
-}
-
-function isMostlyHeaderSegment(segment) {
-  const values = segment.map(cleanValue).filter(Boolean);
-  if (!values.length) return false;
-  const headerCount = values.filter(value => canonicalHeaderKey(value)).length;
-  return headerCount >= 2 && headerCount >= Math.ceil(values.length / 2);
-}
-
-function detectSectionValue(values, flow) {
-  for (const value of values) {
-    if (!value) continue;
-    if (findAllowedFlow(value)) continue;
-    if (canonicalHeaderKey(value)) continue;
-    if (/^\d+[a-z]?$/i.test(value)) continue;
-    if (/reach\s*-?\s*out/i.test(value) || /process/i.test(value) || /flow/i.test(value)) return value;
-  }
-  return "";
-}
-
-function normalizeInnerName(value) {
-  const clean = cleanValue(value);
-  if (/reach\s*-?\s*out/i.test(clean)) return "Reach-out process";
-  return clean || "Reach-out process";
-}
-
-function hasUsefulRecordData(record) {
-  return !!(record.step || record.trigger || record.time || record.action || record.speech || record.template || record.if_reply || record.if_no_reply || record.rules || record.questions);
-}
-
-function applyFallbackMapping(record, values, flow) {
-  const usable = values.filter(value => {
-    if (!value) return false;
-    if (flowKey(value) === flowKey(flow)) return false;
-    if (findAllowedFlow(value)) return false;
-    if (canonicalHeaderKey(value)) return false;
-    return true;
-  });
-
-  if (!usable.length) return;
-
-  if (!record.inner_flow) {
-    const inner = detectSectionValue(usable, flow);
-    if (inner) record.inner_flow = normalizeInnerName(inner);
-  }
-
-  if (!record.step) {
-    const stepValue = usable.find(value => /^\s*(step\s*)?\d+[a-z]?\s*$/i.test(value));
-    if (stepValue) record.step = stepValue.replace(/^\s*step\s*/i, "").trim();
-  }
-
-  const startIndex = record.step ? usable.findIndex(value => value.replace(/^\s*step\s*/i, "").trim() === record.step) + 1 : 0;
-  const afterStep = usable.slice(Math.max(0, startIndex)).filter(value => value !== record.inner_flow && value !== record.objective);
-
-  if (!record.trigger && afterStep[0]) record.trigger = afterStep[0];
-  if (!record.time && afterStep[1]) record.time = afterStep[1];
-  if (!record.action && afterStep[2]) record.action = afterStep[2];
-  if (!record.speech && afterStep.length > 3) record.speech = afterStep.slice(3).join("\n\n");
-}
-
 function findHeaderInfo(matrix) {
-  for (let rowIndex = 0; rowIndex < matrix.length; rowIndex++) {
+  for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 80); rowIndex++) {
     const row = matrix[rowIndex] || [];
-    const columnKeys = row.map(value => canonicalHeaderKey(value));
+    const rawKeys = row.map(value => canonicalHeaderKey(value));
+    const columnKeys = disambiguateColumnKeys(rawKeys);
     const hasFlow = columnKeys.includes("flow");
+    const hasObjective = columnKeys.includes("objective");
     const hasInner = columnKeys.includes("inner_flow");
     const hasStep = columnKeys.includes("step");
     const hasTrigger = columnKeys.includes("trigger");
     const hasTime = columnKeys.includes("time");
     const hasAction = columnKeys.includes("action");
-    const hasSpeech = columnKeys.includes("speech") || columnKeys.includes("template");
-    const rowText = norm(row.join(" "));
 
-    if (
-      (hasFlow && (hasInner || hasStep || hasTrigger || hasAction)) ||
-      (hasStep && (hasTrigger || hasTime || hasAction || hasSpeech)) ||
-      (rowText.includes("what triggers") && (rowText.includes("step") || rowText.includes("time")))
-    ) {
-      return {
-        rowIndex,
-        columnKeys,
-        labels: row.map(value => cleanValue(value))
-      };
+    if (hasFlow && hasObjective && hasInner && hasStep) {
+      return { rowIndex, columnKeys, labels: row.map(cleanValue) };
+    }
+    if (hasFlow && hasStep && (hasTrigger || hasTime || hasAction)) {
+      return { rowIndex, columnKeys, labels: row.map(cleanValue) };
     }
   }
   return null;
 }
 
-function canonicalHeaderKey(value) {
-  const n = norm(value).replace(/[\n\r]+/g, " ").replace(/[_-]+/g, " ").replace(/\s+/g, " ");
-  if (!n) return "";
-  for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
-    if (aliases.some(alias => n === norm(alias).replace(/[_-]+/g, " "))) return key;
-  }
-  if (n.includes("trigger") && n.includes("step")) return "trigger";
-  if (n.includes("no answer") && n.includes("reply") && n.includes("template")) return "template";
-  if (n.includes("no answer") || n.includes("no reply")) return "if_no_reply";
-  if (n.includes("answer") || n.includes("reply")) return "if_reply";
-  if (n.includes("speech") || n.includes("message")) return "speech";
-  if (n.includes("template")) return "template";
-  if (n.includes("reach") && n.includes("process")) return "inner_flow";
-  if (n === "before sr" || n === "follow up" || n === "future") return "flow";
-  return "";
-}
-
-function rowsFromSectionedMatrix(matrix) {
-  let currentFlow = "";
-  let currentInner = "Reach-out process";
-  const output = [];
-
-  matrix.forEach((row, rowIndex) => {
-    const clean = row.map(cleanValue);
-    const joined = clean.filter(Boolean).join(" | ");
-    if (!joined) return;
-
-    const matchedFlow = findAllowedFlowInRow(clean);
-    if (matchedFlow) {
-      currentFlow = matchedFlow;
-      currentInner = "Reach-out process";
-    }
-
-    const isHeader = clean.some(v => canonicalHeaderKey(v) === "step") && clean.some(v => ["trigger", "time", "action", "speech", "template"].includes(canonicalHeaderKey(v)));
-    if (isHeader) return;
-
-    if (!currentFlow) return;
-
-    const record = emptyRecord();
-    record.flow = currentFlow;
-    record.inner_flow = currentInner;
-    record.row_number = rowIndex + 1;
-
-    const stepCellIndex = clean.findIndex(v => /^\s*(step\s*)?\d+[a-z]?\s*$/i.test(v));
-    if (stepCellIndex >= 0) record.step = clean[stepCellIndex].replace(/^step\s*/i, "");
-
-    // Use likely SR table order when no formal header is available.
-    const nonEmpty = clean.filter(Boolean);
-    const sectionOnly = matchedFlow && nonEmpty.length <= 2;
-    if (sectionOnly) return;
-
-    const afterStep = stepCellIndex >= 0 ? clean.slice(stepCellIndex + 1).filter(Boolean) : nonEmpty.filter(v => flowKey(v) !== flowKey(currentFlow));
-    record.trigger = afterStep[0] || "";
-    record.time = afterStep[1] || "";
-    record.action = afterStep[2] || "";
-    record.speech = afterStep.slice(3).join("\n\n");
-
-    const possibleInner = nonEmpty.find(v => !/^\s*(step\s*)?\d+[a-z]?\s*$/i.test(v) && flowKey(v) !== flowKey(currentFlow) && v.length < 80);
-    if (possibleInner && !record.trigger.includes(possibleInner)) {
-      currentInner = possibleInner;
-      record.inner_flow = currentInner;
-    }
-
-    const hasUsefulData = record.step || record.trigger || record.time || record.action || record.speech;
-    if (hasUsefulData) output.push(record);
+function disambiguateColumnKeys(keys) {
+  const counts = {};
+  return keys.map(key => {
+    if (!key) return "";
+    const count = counts[key] || 0;
+    counts[key] = count + 1;
+    if (key === "if_no_reply" && count >= 1) return "template";
+    return key;
   });
-
-  return output;
 }
 
-function emptyRecord() {
-  const record = {};
-  HEADER_MAP.forEach(key => record[key] = "");
-  return record;
-}
+function canonicalHeaderKey(value) {
+  const n = norm(value).replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (!n) return "";
 
-function inferInnerFromRow(row, columnKeys, stepIndex, matchedFlow) {
-  const valuesBeforeStep = stepIndex > 0 ? row.slice(0, stepIndex) : row.slice(0, 3);
-  const candidates = valuesBeforeStep.map(cleanValue).filter(Boolean);
-  for (const value of candidates) {
-    if (matchedFlow && flowKey(value) === flowKey(matchedFlow)) continue;
-    if (findAllowedFlow(value)) continue;
-    if (HEADER_TOKENS.has(norm(value))) continue;
-    if (canonicalHeaderKey(value)) continue;
-    if (/^\d+[a-z]?$/i.test(value)) continue;
-    return value;
-  }
+  if (n === "flow") return "flow";
+  if (n === "objective") return "objective";
+  if (n === "inner flow" || n === "inner_flow") return "inner_flow";
+  if (n === "step" || n === "steps") return "step";
+  if (n.includes("trigger") && n.includes("step")) return "trigger";
+  if (n === "time" || n === "timing") return "time";
+  if (n === "action") return "action";
+  if (n === "template/speech" || n === "template / speech" || n === "speech") return "speech";
+  if (n.includes("answer") && n.includes("reply") && !n.includes("no")) return "if_reply";
+  if (n.includes("no answer") || n.includes("no reply")) return "if_no_reply";
+  if (n === "template") return "template";
+  if (n === "questions") return "questions";
+  if (n === "inspiration") return "inspiration";
+  if (n === "rules") return "rules";
+  if (n === "extra" || n === "notes") return "extra";
   return "";
 }
 
-function findAllowedFlowInRow(row) {
-  for (const value of row) {
-    const found = findAllowedFlow(value);
-    if (found) return found;
-  }
-  return "";
-}
-
-function findAllowedFlow(value) {
-  const allowed = Array.isArray(window.PLAYBOOK_ALLOWED_FLOWS) ? window.PLAYBOOK_ALLOWED_FLOWS : [];
-  const key = flowKey(value);
-  if (!key) return "";
-  return allowed.find(flow => key === flowKey(flow) || key.includes(flowKey(flow))) || "";
+function applyColumnLabels(labels) {
+  if (!Array.isArray(labels)) return;
+  const keys = disambiguateColumnKeys(labels.map(canonicalHeaderKey));
+  labels.forEach((label, index) => {
+    const key = keys[index];
+    const clean = cleanValue(label);
+    if (key && clean) HEADER_LABELS[key] = clean;
+  });
+  HEADER_LABELS.template = "If No Answer / No Reply - Template";
 }
 
 function normalizeRows(inputRows) {
@@ -659,64 +331,82 @@ function normalizeRows(inputRows) {
   let currentObjective = "";
   let currentInner = "";
 
-  return inputRows.map((r) => {
-    const record = { ...r };
-    HEADER_MAP.forEach(k => record[k] = cleanValue(record[k]));
+  return inputRows.map((input, index) => {
+    const record = emptyRecord();
+    Object.keys(input || {}).forEach(key => {
+      record[key] = cleanValue(input[key]);
+    });
 
-    if (record.flow) currentFlow = record.flow; else record.flow = currentFlow;
-    if (record.objective) currentObjective = record.objective; else record.objective = currentObjective;
-    if (record.inner_flow) currentInner = record.inner_flow; else record.inner_flow = currentInner;
+    const canonical = canonicalFlowName(record.flow);
+    if (canonical) currentFlow = canonical;
+    else if (record.flow) currentFlow = record.flow;
+    record.flow = currentFlow;
 
+    if (record.objective) currentObjective = record.objective;
+    else record.objective = currentObjective;
+
+    if (record.inner_flow) currentInner = record.inner_flow;
+    else record.inner_flow = currentInner || "Reach-out process";
+
+    record.row_number = Number(record.row_number) || index + 1;
     return record;
+  }).filter(r => isExpectedFlow(r.flow) && hasUsefulData(r));
+}
+
+function emptyRecord() {
+  const record = {};
+  HEADER_MAP.forEach(key => record[key] = "");
+  record.positive_wording_score = "";
+  record.positive_wording = "";
+  record.positive_emotions_score = "";
+  record.positive_emotions = "";
+  record.negative_wording_score = "";
+  record.negative_wording = "";
+  record.negative_emotions_score = "";
+  record.negative_emotions = "";
+  record.questions = "";
+  record.inspiration = "";
+  record.rules = "";
+  record.extra = "";
+  return record;
+}
+
+function canonicalFlowName(value) {
+  const key = flowKey(value);
+  if (!key) return "";
+  if (key === "beforesr" || key === "beforeshowroom") return "Before SR";
+  if (key === "followup" || key === "followups") return "Follow up";
+  if (key === "future") return "Future";
+  return "";
+}
+
+function isExpectedFlow(value) {
+  return EXPECTED_FLOWS.some(flow => flowKey(flow) === flowKey(value));
+}
+
+function hasUsefulData(record) {
+  return !!(record && (record.step || record.trigger || record.time || record.action || record.speech || record.if_reply || record.if_no_reply || record.template));
+}
+
+function bindEvents() {
+  el.searchInput.addEventListener("input", render);
+  el.channelFilter.addEventListener("change", render);
+  el.languageFilter.addEventListener("change", render);
+  el.resetBtn.addEventListener("click", () => {
+    el.searchInput.value = "";
+    el.channelFilter.value = "";
+    el.languageFilter.value = "";
+    selectedFlow = null;
+    selectedInner = null;
+    allExpanded = false;
+    el.expandAllBtn.textContent = "Expand all";
+    render();
   });
-}
-
-function filterAllowedFlows(inputRows) {
-  const allowed = window.PLAYBOOK_ALLOWED_FLOWS;
-  if (!Array.isArray(allowed) || !allowed.length) return inputRows;
-  const allowedSet = new Set(allowed.map(flowKey));
-  return inputRows.filter(r => allowedSet.has(flowKey(r.flow)));
-}
-
-function flowKey(value) {
-  return norm(value).replace(/[^a-z0-9]+/g, "");
-}
-
-function parseCsv(text) {
-  const rows = [];
-  let row = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const next = text[i + 1];
-
-    if (char === '"' && inQuotes && next === '"') {
-      cell += '"';
-      i++;
-    } else if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === "," && !inQuotes) {
-      row.push(cell);
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") i++;
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-
-  if (cell.length || row.length) {
-    row.push(cell);
-    rows.push(row);
-  }
-
-  return rows;
+  el.expandAllBtn.addEventListener("click", () => {
+    allExpanded = !allExpanded;
+    el.expandAllBtn.textContent = allExpanded ? "Collapse all" : "Expand all";
+    renderSteps();
+  });
 }
 
 function filteredRows() {
@@ -726,7 +416,7 @@ function filteredRows() {
 
   return rows.filter(r => {
     const text = norm(Object.values(r).join(" "));
-    const channelOk = !channel || norm(r.channel || r.action).includes(channel);
+    const channelOk = !channel || norm(inferChannel(r)).includes(channel);
     const languageOk = !language || norm(r.language).includes(language);
     const textOk = !term || text.includes(term);
     return channelOk && languageOk && textOk;
@@ -737,24 +427,18 @@ function render() {
   renderBreadcrumbs();
   renderFlows();
 
-  if (selectedFlow) {
-    renderInnerFlows();
-  } else {
+  if (selectedFlow) renderInnerFlows();
+  else {
     el.innerPanel.classList.add("hidden");
     el.stepsPanel.classList.add("hidden");
   }
 
-  if (selectedFlow && selectedInner) {
-    renderSteps();
-  } else {
-    el.stepsPanel.classList.add("hidden");
-  }
+  if (selectedFlow && selectedInner) renderSteps();
+  else el.stepsPanel.classList.add("hidden");
 }
 
 function renderBreadcrumbs() {
-  const crumbs = [
-    `<span class="crumb active">All flows</span>`
-  ];
+  const crumbs = [`<span class="crumb active">All flows</span>`];
   if (selectedFlow) crumbs.push(`<span class="crumb">${escapeHtml(selectedFlow)}</span>`);
   if (selectedInner) crumbs.push(`<span class="crumb">${escapeHtml(selectedInner)}</span>`);
   el.breadcrumbs.innerHTML = crumbs.join("");
@@ -763,20 +447,14 @@ function renderBreadcrumbs() {
 function renderFlows() {
   const data = filteredRows();
   const flowMap = groupBy(data, r => r.flow || "No flow");
-  const preferred = Array.isArray(window.PLAYBOOK_ALLOWED_FLOWS) ? window.PLAYBOOK_ALLOWED_FLOWS : [];
-  const flowNames = Object.keys(flowMap).filter(Boolean).sort((a, b) => {
-    const ai = preferred.map(flowKey).indexOf(flowKey(a));
-    const bi = preferred.map(flowKey).indexOf(flowKey(b));
-    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-    return a.localeCompare(b);
-  });
+  const flowNames = EXPECTED_FLOWS.filter(flow => flowMap[flow] && flowMap[flow].length);
 
   el.flowCount.textContent = `${flowNames.length} flows`;
 
   el.flowGrid.innerHTML = flowNames.map(flowName => {
     const items = flowMap[flowName];
     const objective = firstNonEmpty(items, "objective");
-    const innerCount = Object.keys(groupBy(items, r => r.inner_flow || "No inner flow")).length;
+    const innerCount = Object.keys(groupBy(items, r => r.inner_flow || "Reach-out process")).length;
     const stepCount = items.filter(r => r.step).length;
     const selectedClass = selectedFlow === flowName ? " selected" : "";
 
@@ -812,7 +490,7 @@ function selectInner(innerName) {
 
 function renderInnerFlows() {
   const data = filteredRows().filter(r => r.flow === selectedFlow);
-  const innerMap = groupBy(data, r => r.inner_flow || "No inner flow");
+  const innerMap = groupBy(data, r => r.inner_flow || "Reach-out process");
   const innerNames = Object.keys(innerMap).filter(Boolean);
 
   el.innerPanel.classList.remove("hidden");
@@ -822,7 +500,7 @@ function renderInnerFlows() {
 
   el.innerGrid.innerHTML = innerNames.map(innerName => {
     const items = innerMap[innerName];
-    const description = firstNonEmpty(items, "trigger") || firstNonEmpty(items, "action") || "";
+    const description = firstNonEmpty(items, "trigger") || firstNonEmpty(items, "action") || "Reach-out process";
     const stepCount = items.filter(r => r.step).length;
     const selectedClass = selectedInner === innerName ? " selected" : "";
 
@@ -866,11 +544,11 @@ function stepCard(r, index) {
     [labelFor("if_reply"), r.if_reply],
     [labelFor("if_no_reply"), r.if_no_reply],
     [labelFor("rules", "Stop / rule"), r.rules || r.stop_rule]
-  ].filter(([, value]) => value);
+  ].filter(([, value]) => displayValue(value));
 
   const textBlocks = [
     [labelFor("speech"), r.speech],
-    ["If No Answer / No Reply - Template", r.template],
+    [labelFor("template"), r.template],
     [labelFor("questions"), r.questions],
     [labelFor("inspiration"), r.inspiration],
     [labelFor("positive_wording"), combineScoreText(r.positive_wording_score, r.positive_wording)],
@@ -878,7 +556,7 @@ function stepCard(r, index) {
     [labelFor("negative_wording"), combineScoreText(r.negative_wording_score, r.negative_wording)],
     [labelFor("negative_emotions"), combineScoreText(r.negative_emotions_score, r.negative_emotions)],
     [labelFor("extra", "Notes"), r.notes || r.extra]
-  ].filter(([, value]) => value && value !== "—" && value !== "-");
+  ].filter(([, value]) => displayValue(value));
 
   return `
     <article class="step-card${openClass}">
@@ -927,6 +605,9 @@ async function copyBlock(button) {
 }
 
 function populateFilters() {
+  el.channelFilter.querySelectorAll("option:not([value=''])").forEach(option => option.remove());
+  el.languageFilter.querySelectorAll("option:not([value=''])").forEach(option => option.remove());
+
   const channels = unique(rows.map(r => inferChannel(r)).filter(Boolean));
   const languages = unique(rows.map(r => r.language).filter(Boolean));
 
@@ -973,7 +654,7 @@ function groupBy(list, fn) {
 }
 
 function firstNonEmpty(items, key) {
-  const found = items.find(item => item[key]);
+  const found = items.find(item => displayValue(item[key]));
   return found ? found[key] : "";
 }
 
@@ -990,8 +671,17 @@ function cleanValue(value) {
   return String(value ?? "").trim();
 }
 
+function displayValue(value) {
+  const v = cleanValue(value);
+  return !!v && v !== "—" && v !== "-";
+}
+
 function norm(value) {
   return String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function flowKey(value) {
+  return norm(value).replace(/[^a-z0-9]+/g, "");
 }
 
 function escapeHtml(value) {
