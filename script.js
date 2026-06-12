@@ -53,13 +53,13 @@ let HEADER_LABELS = {
 };
 
 const HEADER_ALIASES = {
-  flow: ["flow"],
+  flow: ["flow", "layer 1", "stage", "phase", "main flow", "main flows"],
   objective: ["objective"],
-  inner_flow: ["inner flow", "inner_flow", "reach out process", "reach-out process", "reachout process"],
-  step: ["step"],
+  inner_flow: ["inner flow", "inner_flow", "reach out process", "reach-out process", "reachout process", "layer 2", "process", "scenario", "sub flow", "subflow"],
+  step: ["step", "steps", "nr", "no", "number"],
   trigger: ["what triggers the step", "trigger", "trigger of the step", "trigger step"],
   time: ["time", "timing", "when"],
-  action: ["action", "channel", "action/channel", "action / channel"],
+  action: ["action", "channel", "action/channel", "action / channel", "touchpoint", "tool"],
   speech: ["template/speech", "template / speech", "speech", "message", "text", "script"],
   if_reply: ["if answer / reply", "if answer", "if reply", "if customer replies", "if answer reply"],
   if_no_reply: ["if no answer / no reply", "if no answer", "if no reply", "if customer does not reply", "if no answer no reply"],
@@ -152,7 +152,7 @@ async function init() {
   } catch (error) {
     console.error(error);
     el.sourcePill.textContent = "Data load error";
-    el.flowGrid.innerHTML = `<div class="empty-state">Could not load the playbook data. Check that the Google Sheet is shared with anyone who has the link and that the tab name is exactly: ${escapeHtml(window.PLAYBOOK_SHEET_NAME || "")}</div>`;
+    el.flowGrid.innerHTML = `<div class="empty-state">Could not load the live Google Sheet data. Error: ${escapeHtml(error.message || error)}<br><br>Check that the sheet is shared with anyone who has the link and that the tab name is exactly: ${escapeHtml(window.PLAYBOOK_SHEET_NAME || "")}</div>`;
   }
 }
 
@@ -260,7 +260,7 @@ function cleanCell(cell) {
 function rowsFromMatrix(matrix) {
   const headerInfo = findHeaderInfo(matrix);
   if (!headerInfo) {
-    throw new Error("Could not find the flow header row. Expected columns such as Flow, Inner flow and Step in the selected sheet/range.");
+    return rowsFromSectionedMatrix(matrix);
   }
 
   headerInfo.labels.forEach((label, index) => {
@@ -271,28 +271,47 @@ function rowsFromMatrix(matrix) {
   const dataRows = matrix.slice(headerInfo.rowIndex + 1);
   let currentFlow = "";
   let currentObjective = "";
-  let currentInner = "";
+  let currentInner = "Reach-out process";
+  const stepIndex = headerInfo.columnKeys.indexOf("step");
 
-  return dataRows.map((row, idx) => {
-    const record = {};
-    HEADER_MAP.forEach(key => record[key] = "");
+  const output = [];
+
+  dataRows.forEach((row, idx) => {
+    const matchedFlow = findAllowedFlowInRow(row);
+    const record = emptyRecord();
 
     headerInfo.columnKeys.forEach((key, index) => {
       if (!key) return;
       record[key] = cleanValue(row[index]);
     });
 
-    if (record.flow) currentFlow = record.flow; else record.flow = currentFlow;
-    if (record.objective) currentObjective = record.objective; else record.objective = currentObjective;
-    if (record.inner_flow) currentInner = record.inner_flow; else record.inner_flow = currentInner;
+    if (matchedFlow) currentFlow = matchedFlow;
+    if (record.flow) currentFlow = record.flow;
+    else record.flow = currentFlow;
+
+    if (record.objective) currentObjective = record.objective;
+    else record.objective = currentObjective;
+
+    const possibleInner = inferInnerFromRow(row, headerInfo.columnKeys, stepIndex, matchedFlow);
+    if (record.inner_flow) currentInner = record.inner_flow;
+    else if (possibleInner) currentInner = possibleInner;
+    else record.inner_flow = currentInner;
+
+    if (!record.inner_flow) record.inner_flow = currentInner || "Reach-out process";
 
     Object.keys(record).forEach(key => {
       if (HEADER_TOKENS.has(norm(record[key]))) record[key] = "";
     });
 
     record.row_number = headerInfo.rowIndex + idx + 2;
-    return record;
-  }).filter(r => Object.values(r).some(Boolean));
+
+    const isOnlySectionRow = matchedFlow && !record.step && !record.trigger && !record.time && !record.action && !record.speech && !record.template;
+    const hasUsefulData = record.step || record.trigger || record.time || record.action || record.speech || record.template || record.if_reply || record.if_no_reply;
+
+    if (!isOnlySectionRow && record.flow && hasUsefulData) output.push(record);
+  });
+
+  return output.length ? output : rowsFromSectionedMatrix(matrix);
 }
 
 function findHeaderInfo(matrix) {
@@ -303,8 +322,16 @@ function findHeaderInfo(matrix) {
     const hasInner = columnKeys.includes("inner_flow");
     const hasStep = columnKeys.includes("step");
     const hasTrigger = columnKeys.includes("trigger");
+    const hasTime = columnKeys.includes("time");
+    const hasAction = columnKeys.includes("action");
+    const hasSpeech = columnKeys.includes("speech") || columnKeys.includes("template");
+    const rowText = norm(row.join(" "));
 
-    if (hasFlow && (hasInner || hasStep || hasTrigger)) {
+    if (
+      (hasFlow && (hasInner || hasStep || hasTrigger || hasAction)) ||
+      (hasStep && (hasTrigger || hasTime || hasAction || hasSpeech)) ||
+      (rowText.includes("what triggers") && (rowText.includes("step") || rowText.includes("time")))
+    ) {
       return {
         rowIndex,
         columnKeys,
@@ -321,7 +348,103 @@ function canonicalHeaderKey(value) {
   for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
     if (aliases.some(alias => n === norm(alias).replace(/[_-]+/g, " "))) return key;
   }
+  if (n.includes("trigger") && n.includes("step")) return "trigger";
+  if (n.includes("no answer") && n.includes("reply") && n.includes("template")) return "template";
+  if (n.includes("no answer") || n.includes("no reply")) return "if_no_reply";
+  if (n.includes("answer") || n.includes("reply")) return "if_reply";
+  if (n.includes("speech") || n.includes("message")) return "speech";
+  if (n.includes("template")) return "template";
+  if (n.includes("reach") && n.includes("process")) return "inner_flow";
+  if (n === "before sr" || n === "follow up" || n === "future") return "flow";
   return "";
+}
+
+function rowsFromSectionedMatrix(matrix) {
+  let currentFlow = "";
+  let currentInner = "Reach-out process";
+  const output = [];
+
+  matrix.forEach((row, rowIndex) => {
+    const clean = row.map(cleanValue);
+    const joined = clean.filter(Boolean).join(" | ");
+    if (!joined) return;
+
+    const matchedFlow = findAllowedFlowInRow(clean);
+    if (matchedFlow) {
+      currentFlow = matchedFlow;
+      currentInner = "Reach-out process";
+    }
+
+    const isHeader = clean.some(v => canonicalHeaderKey(v) === "step") && clean.some(v => ["trigger", "time", "action", "speech", "template"].includes(canonicalHeaderKey(v)));
+    if (isHeader) return;
+
+    if (!currentFlow) return;
+
+    const record = emptyRecord();
+    record.flow = currentFlow;
+    record.inner_flow = currentInner;
+    record.row_number = rowIndex + 1;
+
+    const stepCellIndex = clean.findIndex(v => /^\s*(step\s*)?\d+[a-z]?\s*$/i.test(v));
+    if (stepCellIndex >= 0) record.step = clean[stepCellIndex].replace(/^step\s*/i, "");
+
+    // Use likely SR table order when no formal header is available.
+    const nonEmpty = clean.filter(Boolean);
+    const sectionOnly = matchedFlow && nonEmpty.length <= 2;
+    if (sectionOnly) return;
+
+    const afterStep = stepCellIndex >= 0 ? clean.slice(stepCellIndex + 1).filter(Boolean) : nonEmpty.filter(v => flowKey(v) !== flowKey(currentFlow));
+    record.trigger = afterStep[0] || "";
+    record.time = afterStep[1] || "";
+    record.action = afterStep[2] || "";
+    record.speech = afterStep.slice(3).join("\n\n");
+
+    const possibleInner = nonEmpty.find(v => !/^\s*(step\s*)?\d+[a-z]?\s*$/i.test(v) && flowKey(v) !== flowKey(currentFlow) && v.length < 80);
+    if (possibleInner && !record.trigger.includes(possibleInner)) {
+      currentInner = possibleInner;
+      record.inner_flow = currentInner;
+    }
+
+    const hasUsefulData = record.step || record.trigger || record.time || record.action || record.speech;
+    if (hasUsefulData) output.push(record);
+  });
+
+  return output;
+}
+
+function emptyRecord() {
+  const record = {};
+  HEADER_MAP.forEach(key => record[key] = "");
+  return record;
+}
+
+function inferInnerFromRow(row, columnKeys, stepIndex, matchedFlow) {
+  const valuesBeforeStep = stepIndex > 0 ? row.slice(0, stepIndex) : row.slice(0, 3);
+  const candidates = valuesBeforeStep.map(cleanValue).filter(Boolean);
+  for (const value of candidates) {
+    if (matchedFlow && flowKey(value) === flowKey(matchedFlow)) continue;
+    if (findAllowedFlow(value)) continue;
+    if (HEADER_TOKENS.has(norm(value))) continue;
+    if (canonicalHeaderKey(value)) continue;
+    if (/^\d+[a-z]?$/i.test(value)) continue;
+    return value;
+  }
+  return "";
+}
+
+function findAllowedFlowInRow(row) {
+  for (const value of row) {
+    const found = findAllowedFlow(value);
+    if (found) return found;
+  }
+  return "";
+}
+
+function findAllowedFlow(value) {
+  const allowed = Array.isArray(window.PLAYBOOK_ALLOWED_FLOWS) ? window.PLAYBOOK_ALLOWED_FLOWS : [];
+  const key = flowKey(value);
+  if (!key) return "";
+  return allowed.find(flow => key === flowKey(flow) || key.includes(flowKey(flow))) || "";
 }
 
 function normalizeRows(inputRows) {
