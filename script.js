@@ -258,6 +258,9 @@ function cleanCell(cell) {
 }
 
 function rowsFromMatrix(matrix) {
+  const wideRows = rowsFromWideFlowMatrix(matrix);
+  if (wideRows.length) return wideRows;
+
   const headerInfo = findHeaderInfo(matrix);
   if (!headerInfo) {
     return rowsFromSectionedMatrix(matrix);
@@ -312,6 +315,210 @@ function rowsFromMatrix(matrix) {
   });
 
   return output.length ? output : rowsFromSectionedMatrix(matrix);
+}
+
+
+function rowsFromWideFlowMatrix(matrix) {
+  const allowed = Array.isArray(window.PLAYBOOK_ALLOWED_FLOWS) ? window.PLAYBOOK_ALLOWED_FLOWS : [];
+  if (!allowed.length || !Array.isArray(matrix) || !matrix.length) return [];
+
+  let flowHeaderRowIndex = -1;
+  let starts = [];
+
+  for (let rowIndex = 0; rowIndex < Math.min(matrix.length, 80); rowIndex++) {
+    const row = matrix[rowIndex] || [];
+    const found = [];
+    row.forEach((value, index) => {
+      const flow = findAllowedFlow(value);
+      if (flow && !found.some(item => flowKey(item.flow) === flowKey(flow))) {
+        found.push({ flow, index });
+      }
+    });
+    if (found.length >= 2) {
+      flowHeaderRowIndex = rowIndex;
+      starts = found.sort((a, b) => a.index - b.index);
+      break;
+    }
+  }
+
+  if (flowHeaderRowIndex < 0 || starts.length < 2) return [];
+
+  const maxCols = Math.max(...matrix.map(row => row.length));
+  const blocks = starts.map((item, i) => ({
+    flow: item.flow,
+    start: item.index,
+    end: i + 1 < starts.length ? starts[i + 1].index : maxCols
+  }));
+
+  const output = [];
+
+  blocks.forEach(block => {
+    const headerInfo = findBlockHeader(matrix, block, flowHeaderRowIndex);
+    const columnKeys = headerInfo.columnKeys;
+    const headerRowIndex = headerInfo.rowIndex;
+    const dataStart = headerRowIndex >= 0 ? headerRowIndex + 1 : flowHeaderRowIndex + 1;
+
+    let currentInner = "Reach-out process";
+    let currentObjective = "Reach-out process";
+
+    for (let rowIndex = dataStart; rowIndex < matrix.length; rowIndex++) {
+      const segment = sliceBlock(matrix[rowIndex] || [], block);
+      if (!segment.some(v => cleanValue(v))) continue;
+
+      const hasOtherFlowMarker = segment.some(value => {
+        const found = findAllowedFlow(value);
+        return found && flowKey(found) !== flowKey(block.flow);
+      });
+      if (hasOtherFlowMarker) continue;
+
+      if (isMostlyHeaderSegment(segment)) continue;
+
+      const record = emptyRecord();
+      record.flow = block.flow;
+      record.objective = currentObjective;
+      record.inner_flow = currentInner;
+      record.row_number = rowIndex + 1;
+
+      columnKeys.forEach((key, index) => {
+        if (!key) return;
+        const value = cleanValue(segment[index]);
+        if (HEADER_TOKENS.has(norm(value))) return;
+        record[key] = value;
+      });
+
+      const values = segment.map(cleanValue).filter(Boolean).filter(value => !HEADER_TOKENS.has(norm(value)));
+      const sectionValue = detectSectionValue(values, block.flow);
+      const hasMappedUseful = hasUsefulRecordData(record);
+
+      if (sectionValue && !hasMappedUseful && values.length <= 3) {
+        currentInner = normalizeInnerName(sectionValue);
+        currentObjective = currentInner;
+        continue;
+      }
+
+      if (!record.inner_flow || flowKey(record.inner_flow) === flowKey(block.flow)) record.inner_flow = currentInner;
+      if (!record.objective) record.objective = currentObjective;
+
+      applyFallbackMapping(record, values, block.flow);
+
+      if (hasUsefulRecordData(record)) {
+        if (!record.inner_flow) record.inner_flow = currentInner;
+        output.push(record);
+      }
+    }
+  });
+
+  const parsedFlows = new Set(output.map(r => flowKey(r.flow)));
+  if (parsedFlows.size < 2) return [];
+  return output;
+}
+
+function findBlockHeader(matrix, block, flowHeaderRowIndex) {
+  const fallbackWidth = Math.max(0, block.end - block.start);
+  let best = { rowIndex: -1, columnKeys: Array(fallbackWidth).fill(""), score: 0 };
+
+  const scanEnd = Math.min(matrix.length, flowHeaderRowIndex + 15);
+  for (let rowIndex = flowHeaderRowIndex; rowIndex < scanEnd; rowIndex++) {
+    const segment = sliceBlock(matrix[rowIndex] || [], block);
+    const keys = segment.map(value => canonicalHeaderKey(value));
+    const score = keys.filter(key => ["inner_flow", "step", "trigger", "time", "action", "speech", "template", "if_reply", "if_no_reply"].includes(key)).length;
+    if (score > best.score) best = { rowIndex, columnKeys: keys, score };
+  }
+
+  if (best.score >= 2) return best;
+
+  return {
+    rowIndex: -1,
+    columnKeys: defaultBlockKeys(fallbackWidth),
+    score: 0
+  };
+}
+
+function defaultBlockKeys(width) {
+  const base = [
+    "inner_flow",
+    "step",
+    "trigger",
+    "time",
+    "action",
+    "speech",
+    "if_reply",
+    "if_no_reply",
+    "template",
+    "positive_wording",
+    "positive_emotions",
+    "negative_wording",
+    "negative_emotions",
+    "questions",
+    "inspiration",
+    "rules",
+    "extra"
+  ];
+  return Array.from({ length: width }, (_, index) => base[index] || "extra");
+}
+
+function sliceBlock(row, block) {
+  const out = [];
+  for (let i = block.start; i < block.end; i++) out.push(cleanValue(row[i] || ""));
+  return out;
+}
+
+function isMostlyHeaderSegment(segment) {
+  const values = segment.map(cleanValue).filter(Boolean);
+  if (!values.length) return false;
+  const headerCount = values.filter(value => canonicalHeaderKey(value)).length;
+  return headerCount >= 2 && headerCount >= Math.ceil(values.length / 2);
+}
+
+function detectSectionValue(values, flow) {
+  for (const value of values) {
+    if (!value) continue;
+    if (findAllowedFlow(value)) continue;
+    if (canonicalHeaderKey(value)) continue;
+    if (/^\d+[a-z]?$/i.test(value)) continue;
+    if (/reach\s*-?\s*out/i.test(value) || /process/i.test(value) || /flow/i.test(value)) return value;
+  }
+  return "";
+}
+
+function normalizeInnerName(value) {
+  const clean = cleanValue(value);
+  if (/reach\s*-?\s*out/i.test(clean)) return "Reach-out process";
+  return clean || "Reach-out process";
+}
+
+function hasUsefulRecordData(record) {
+  return !!(record.step || record.trigger || record.time || record.action || record.speech || record.template || record.if_reply || record.if_no_reply || record.rules || record.questions);
+}
+
+function applyFallbackMapping(record, values, flow) {
+  const usable = values.filter(value => {
+    if (!value) return false;
+    if (flowKey(value) === flowKey(flow)) return false;
+    if (findAllowedFlow(value)) return false;
+    if (canonicalHeaderKey(value)) return false;
+    return true;
+  });
+
+  if (!usable.length) return;
+
+  if (!record.inner_flow) {
+    const inner = detectSectionValue(usable, flow);
+    if (inner) record.inner_flow = normalizeInnerName(inner);
+  }
+
+  if (!record.step) {
+    const stepValue = usable.find(value => /^\s*(step\s*)?\d+[a-z]?\s*$/i.test(value));
+    if (stepValue) record.step = stepValue.replace(/^\s*step\s*/i, "").trim();
+  }
+
+  const startIndex = record.step ? usable.findIndex(value => value.replace(/^\s*step\s*/i, "").trim() === record.step) + 1 : 0;
+  const afterStep = usable.slice(Math.max(0, startIndex)).filter(value => value !== record.inner_flow && value !== record.objective);
+
+  if (!record.trigger && afterStep[0]) record.trigger = afterStep[0];
+  if (!record.time && afterStep[1]) record.time = afterStep[1];
+  if (!record.action && afterStep[2]) record.action = afterStep[2];
+  if (!record.speech && afterStep.length > 3) record.speech = afterStep.slice(3).join("\n\n");
 }
 
 function findHeaderInfo(matrix) {
