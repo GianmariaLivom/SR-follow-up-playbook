@@ -3,55 +3,92 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="robots" content="noindex" />
   <title>SR Follow-ups Playbook</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="page-shell">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Livom</p>
-        <h1 id="app-title">SR Follow-ups Playbook</h1>
-        <p id="app-subtitle" class="subtitle">Live from Google Sheets</p>
-      </div>
-      <div class="hero-actions">
-        <button id="refresh-button" type="button">Refresh</button>
-        <a id="sheet-link" href="#" target="_blank" rel="noopener">Open Sheet</a>
-      </div>
-    </header>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Livom Sales</p>
+      <h1>SR Follow-ups Playbook</h1>
+      <p class="subtitle">Before SR → Follow up → Future</p>
+    </div>
+    <div class="source-pill" id="sourcePill">Loading data…</div>
+  </header>
 
-    <section class="toolbar" aria-label="Filters">
-      <label class="search-box">
-        <span>Search</span>
-        <input id="search-input" type="search" placeholder="Search speech, scenario, text..." autocomplete="off" />
-      </label>
-      <div id="filter-panel" class="filter-panel"></div>
+  <main class="layout">
+    <aside class="sidebar">
+      <label for="searchInput">Search</label>
+      <input id="searchInput" type="search" placeholder="Search flows, steps, templates…" />
+
+      <label for="channelFilter">Channel</label>
+      <select id="channelFilter">
+        <option value="">All channels</option>
+      </select>
+
+      <label for="languageFilter">Language</label>
+      <select id="languageFilter">
+        <option value="">All languages</option>
+      </select>
+
+      <button id="resetBtn" class="secondary">Reset filters</button>
+
+      <div class="legend">
+        <strong>Structure</strong>
+        <span>1. Select a flow</span>
+        <span>2. Select an inner flow</span>
+        <span>3. Read/copy the steps</span>
+      </div>
+    </aside>
+
+    <section class="content">
+      <nav class="breadcrumbs" id="breadcrumbs"></nav>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">Layer 1</p>
+            <h2>Flows</h2>
+          </div>
+          <span class="count" id="flowCount"></span>
+        </div>
+        <div class="grid" id="flowGrid"></div>
+      </section>
+
+      <section class="panel hidden" id="innerPanel">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">Layer 2</p>
+            <h2 id="innerPanelTitle">Inner flows</h2>
+          </div>
+          <span class="count" id="innerCount"></span>
+        </div>
+        <p class="panel-description" id="flowObjective"></p>
+        <div class="grid" id="innerGrid"></div>
+      </section>
+
+      <section class="panel hidden" id="stepsPanel">
+        <div class="panel-head">
+          <div>
+            <p class="section-kicker">Layer 3</p>
+            <h2 id="stepsPanelTitle">Steps</h2>
+          </div>
+          <div class="panel-actions">
+            <button id="expandAllBtn" class="secondary">Expand all</button>
+            <span class="count" id="stepCount"></span>
+          </div>
+        </div>
+        <p class="panel-description" id="innerDescription"></p>
+        <div class="steps" id="stepsContainer"></div>
+      </section>
     </section>
+  </main>
 
-    <main>
-      <div class="status-line">
-        <span id="result-count">Loading...</span>
-        <span id="last-updated"></span>
-      </div>
-      <div id="error-box" class="error-box" hidden></div>
-      <div id="playbook-grid" class="playbook-grid" aria-live="polite"></div>
-    </main>
-  </div>
-
-  <template id="card-template">
-    <article class="playbook-card">
-      <div class="card-topline"></div>
-      <h2></h2>
-      <p class="card-body"></p>
-      <dl class="field-list"></dl>
-      <div class="card-actions">
-        <button type="button" class="copy-button">Copy</button>
-      </div>
-    </article>
+  <template id="copyButtonTemplate">
+    <button class="copy-btn" type="button">Copy</button>
   </template>
 
   <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
